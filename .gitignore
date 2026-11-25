@@ -1,0 +1,95 @@
+# ==============================================================================
+# HVIA Task 04 — Amira Al Sebou: Git Ignore Rules
+# Security priority: Prevent leaks of company data, DB dumps, secrets, and logs.
+# ==============================================================================
+
+# --- Environment Variables & Secrets ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+secrets/
+.streamlit/secrets.toml
+
+# --- Database Dumps, Raw Business Data & Exports (CRITICAL) ---
+# Ignore all SQL dumps and data files by default so sensitive data is never pushed.
+# Whitelist explicitly (e.g., !sql/schema/*.sql) only for data-free DDL/ETL scripts.
+*.sql
+*.sql.gz
+*.dump
+*.bak
+*.backup
+*.db
+*.sqlite
+*.sqlite3
+amira_training_original_invoices*.sql
+data/
+raw_data/
+staging_data/
+exports/
+backups/
+*.csv
+*.tsv
+*.parquet
+*.feather
+*.xlsx
+*.xls
+
+# --- Generated Reports & Logs ---
+logs/
+*.log
+*.log.*
+reports/
+
+# --- Python & Conda Artifacts ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+.venv/
+venv/
+env/
+ENV/
+.conda/
+
+# --- Testing, Coverage & Linting ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.cache/
+
+# --- Jupyter Notebooks ---
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# --- Docker Runtime Volumes ---
+pgdata/
+ollama_data/
+volumes/
+
+# --- IDE & OS Files ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+tmp/
+temp/
+*.tmp
