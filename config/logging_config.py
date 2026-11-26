@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import logging
 import re
+import time
+from collections.abc import Callable
+from functools import wraps
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from functools import wraps
-from typing import Any, Callable
+from typing import Any
 
 from config.settings import get_settings
-
 
 # ---------------------------------------------------------------------------
 # PII / Secret Patterns to Redact
@@ -33,11 +34,13 @@ _SENSITIVE_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"!DISABLED_NON_HASH!", re.IGNORECASE), r"***REDACTED_HASH***"),
 ]
 
+_BASIC_EXCEPTION_FORMATTER = logging.Formatter()
+
 
 class SensitiveDataFilter(logging.Filter):
     """
-    Logging filter that redacts PII and secrets from log records.
-    Applied to all handlers to prevent credential/PII leakage.
+    Logging filter that redacts PII and secrets from log records,
+    including exception tracebacks before formatting.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -54,6 +57,13 @@ class SensitiveDataFilter(logging.Filter):
                     self._sanitize(a) if isinstance(a, str) else a
                     for a in record.args
                 )
+        # Pre-render and sanitize exception tracebacks before Formatter formats them
+        if record.exc_info and not record.exc_text:
+            record.exc_text = _BASIC_EXCEPTION_FORMATTER.formatException(record.exc_info)
+        if record.exc_text and isinstance(record.exc_text, str):
+            record.exc_text = self._sanitize(record.exc_text)
+        if record.stack_info and isinstance(record.stack_info, str):
+            record.stack_info = self._sanitize(record.stack_info)
         return True
 
     @staticmethod
@@ -62,6 +72,14 @@ class SensitiveDataFilter(logging.Filter):
         for pattern, replacement in _SENSITIVE_PATTERNS:
             text = pattern.sub(replacement, text)
         return text
+
+
+class SanitizingFormatter(logging.Formatter):
+    """Formatter that ensures final formatted output (including tracebacks) is sanitized."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        formatted = super().format(record)
+        return SensitiveDataFilter._sanitize(formatted)
 
 
 def _sanitize_text(text: str) -> str:
@@ -85,26 +103,24 @@ def setup_logging(
 ) -> None:
     """
     Configure root logger with console + rotating file handlers.
-    Should be called once at application startup.
+    Preserves external/pytest handlers (such as pytest's caplog handler)
+    while replacing only previously installed HVIA handlers on re-init.
     """
     settings = get_settings()
     level = getattr(logging, log_level or settings.log_level, logging.INFO)
     target_dir = log_dir or settings.log_path
 
-    # Ensure log directory exists
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create the PII filter
     pii_filter = SensitiveDataFilter()
-
-    # Formatter
-    formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
+    formatter = SanitizingFormatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
 
     # Console handler
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(formatter)
     console_handler.addFilter(pii_filter)
+    console_handler._hvia_managed = True
 
     # Rotating file handler (UTF-8 for Arabic text metadata)
     file_handler = RotatingFileHandler(
@@ -116,13 +132,19 @@ def setup_logging(
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
     file_handler.addFilter(pii_filter)
+    file_handler._hvia_managed = True
 
-    # Configure root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
 
-    # Remove existing handlers to avoid duplicates on re-init
-    root_logger.handlers.clear()
+    # Close and remove only our own prior handlers; leave external/pytest handlers intact
+    kept_handlers: list[logging.Handler] = []
+    for handler in root_logger.handlers:
+        if getattr(handler, "_hvia_managed", False):
+            handler.close()
+        else:
+            kept_handlers.append(handler)
+    root_logger.handlers = kept_handlers
     root_logger.addHandler(console_handler)
     root_logger.addHandler(file_handler)
 
@@ -137,7 +159,7 @@ def get_logger(name: str) -> logging.Logger:
 
 def log_execution(stage: str) -> Callable:
     """
-    Decorator that logs function entry/exit with timing and captures exceptions.
+    Decorator that logs function entry/exit with elapsed timing and captures exceptions.
 
     Usage:
         @log_execution("etl.restore")
@@ -149,12 +171,15 @@ def log_execution(stage: str) -> Callable:
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             logger = get_logger(func.__module__ or stage)
             logger.info("[%s] Starting: %s", stage, func.__name__)
+            t0 = time.perf_counter()
             try:
                 result = func(*args, **kwargs)
-                logger.info("[%s] Completed: %s", stage, func.__name__)
+                elapsed = time.perf_counter() - t0
+                logger.info("[%s] Completed: %s (%.2fs)", stage, func.__name__, elapsed)
                 return result
             except Exception:
-                logger.exception("[%s] FAILED: %s", stage, func.__name__)
+                elapsed = time.perf_counter() - t0
+                logger.exception("[%s] FAILED: %s (%.2fs)", stage, func.__name__, elapsed)
                 raise
         return wrapper
     return decorator

@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from pydantic import ValidationError
 
 # ---------------------------------------------------------------------------
 # Settings Tests
@@ -62,11 +63,12 @@ class TestSettings:
         assert s.dq_outlier_iqr_factor == 1.5
 
     def test_database_url_constructed(self):
-        """DATABASE_URL is auto-constructed from parts."""
+        """DATABASE_URL is auto-constructed from parts with psycopg2 driver."""
         s = self._make_settings()
         assert s.database_url is not None
         assert "test_user" in s.database_url
         assert "test_db" in s.database_url
+        assert s.database_url.startswith("postgresql+psycopg2://")
 
     def test_async_database_url(self):
         """Async URL replaces postgresql:// with postgresql+asyncpg://."""
@@ -87,6 +89,23 @@ class TestSettings:
         assert "test_pass" not in str_out
         assert "***" in str_out
 
+    def test_password_masked_in_model_dump_and_json(self):
+        """Password never leaks in model_dump(), model_dump_json(), or safe_database_url."""
+        s = self._make_settings()
+        dumped = s.model_dump()
+        dumped_json = s.model_dump_json()
+        assert "test_pass" not in str(dumped)
+        assert "test_pass" not in dumped_json
+        assert "test_pass" not in s.safe_database_url
+        assert "***" in s.safe_database_url
+
+    def test_unexpanded_database_url_rejected(self):
+        """Literal ${...} template syntax in DATABASE_URL is rejected."""
+        with pytest.raises(Exception, match="unexpanded|\\$\\{"):
+            self._make_settings(
+                DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@localhost:5432/test_db"
+            )
+
     # --- Security: Cloud Model Blocking ---
 
     def test_block_cloud_model_kimi(self):
@@ -97,12 +116,12 @@ class TestSettings:
 
     def test_block_cloud_model_generic(self):
         """Any :cloud model must be rejected."""
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             self._make_settings(OLLAMA_MODEL="llama3:cloud")
 
     def test_block_unlisted_model(self):
         """Models not in allowlist are rejected."""
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             self._make_settings(OLLAMA_MODEL="gpt-4o")
 
     def test_allow_qwen_4b(self):
@@ -125,7 +144,7 @@ class TestSettings:
 
     def test_block_remote_ollama_custom_host(self):
         """Non-local hosts must be rejected."""
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             self._make_settings(OLLAMA_BASE_URL="http://remote-server.com:11434")
 
     def test_allow_localhost(self):
@@ -143,6 +162,13 @@ class TestSettings:
         s = self._make_settings(OLLAMA_BASE_URL="http://host.docker.internal:11434")
         assert "host.docker.internal" in s.ollama_base_url
 
+    def test_allow_ipv6_loopback_and_block_bind_all(self):
+        """IPv6 ::1 is allowed; 0.0.0.0 bind-all address is blocked."""
+        s = self._make_settings(OLLAMA_BASE_URL="http://[::1]:11434")
+        assert "::1" in s.ollama_base_url
+        with pytest.raises(Exception, match="SECURITY|blocked"):
+            self._make_settings(OLLAMA_BASE_URL="http://0.0.0.0:11434")
+
     # --- Missing Required Fields ---
 
     def test_missing_password_raises(self):
@@ -150,15 +176,14 @@ class TestSettings:
         from config.settings import Settings
         # Remove POSTGRES_PASSWORD from env so it's truly missing
         env_without_pass = {k: v for k, v in os.environ.items() if k != "POSTGRES_PASSWORD"}
-        with patch.dict(os.environ, env_without_pass, clear=True):
-            with pytest.raises(Exception):
-                Settings(
-                    _env_file=None,
-                    POSTGRES_USER="user",
-                    POSTGRES_DB="db",
-                    OLLAMA_MODEL="qwen3.5:4b",
-                    OLLAMA_BASE_URL="http://localhost:11434",
-                )
+        with patch.dict(os.environ, env_without_pass, clear=True), pytest.raises(ValidationError):
+            Settings(
+                _env_file=None,
+                POSTGRES_USER="user",
+                POSTGRES_DB="db",
+                OLLAMA_MODEL="qwen3.5:4b",
+                OLLAMA_BASE_URL="http://localhost:11434",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +302,7 @@ class TestLogging:
         assert "***" in result
 
     def test_log_execution_decorator_success(self, log_dir):
-        """log_execution logs entry/exit on success."""
+        """log_execution logs entry/exit with elapsed timing on success."""
         self._setup_with_env(log_dir)
         from config.logging_config import log_execution
 
@@ -291,7 +316,36 @@ class TestLogging:
         log_file = log_dir / "hvia_pipeline.log"
         content = log_file.read_text(encoding="utf-8")
         assert "Starting: successful_func" in content
-        assert "Completed: successful_func" in content
+        assert "Completed: successful_func (" in content
+        assert "s)" in content
+
+    def test_pii_sanitizer_masks_exception_traceback(self, log_dir):
+        """DSN secrets inside exception tracebacks are masked in log output."""
+        self._setup_with_env(log_dir)
+        from config.logging_config import get_logger
+
+        logger = get_logger("test.traceback_pii")
+        try:
+            raise RuntimeError("Connect failed: postgresql://hvia_admin:tb_secret_999@localhost:5432/db")
+        except RuntimeError:
+            logger.exception("Failure occurred")
+
+        log_file = log_dir / "hvia_pipeline.log"
+        content = log_file.read_text(encoding="utf-8")
+        assert "tb_secret_999" not in content
+        assert "***" in content
+
+    def test_setup_logging_preserves_external_handlers(self, log_dir):
+        """setup_logging does not wipe third-party / pytest caplog handlers."""
+        external = logging.NullHandler()
+        root = logging.getLogger()
+        root.addHandler(external)
+        try:
+            self._setup_with_env(log_dir)
+            assert external in root.handlers
+        finally:
+            if external in root.handlers:
+                root.removeHandler(external)
 
     def test_log_execution_decorator_failure(self, log_dir):
         """log_execution logs full traceback on exception and re-raises."""
@@ -313,7 +367,7 @@ class TestLogging:
     def test_rotating_handler_rollover(self, tmp_path):
         """Rotating handler rolls over when maxBytes is exceeded."""
         log_dir = tmp_path / "rotation_test"
-        from config.logging_config import setup_logging, get_logger
+        from config.logging_config import get_logger, setup_logging
         env = {
             "POSTGRES_PASSWORD": "test_pass",
             "OLLAMA_MODEL": "qwen3.5:4b",
