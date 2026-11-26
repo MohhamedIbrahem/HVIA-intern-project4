@@ -1,0 +1,60 @@
+# =============================================================================
+# HVIA Task 04 — Docker Compose
+# PostgreSQL 16 database + future Streamlit dashboard service
+# =============================================================================
+#
+# Usage:
+#   docker compose up -d postgres        # Start database only
+#   docker compose up -d                 # Start all services
+#   docker compose down                  # Stop all services
+#   docker compose down -v               # Stop + remove volumes (DESTROYS DATA)
+#
+# Ollama runs natively on Windows host — NOT inside Docker.
+# Containers reach host Ollama via: http://host.docker.internal:11434
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16 — Primary Database
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: hvia_postgres
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hvia_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-amira_training_lab}
+      # Performance tuning for small dataset within 512MB limit
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=en_US.utf8"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hvia_admin} -d ${POSTGRES_DB:-amira_training_lab}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    # PostgreSQL tuning for small dataset + limited RAM
+    command: >
+      postgres
+        -c shared_buffers=128MB
+        -c work_mem=8MB
+        -c maintenance_work_mem=64MB
+        -c effective_cache_size=256MB
+        -c max_connections=50
+        -c log_statement=none
+        -c log_min_duration_statement=1000
+        -c client_encoding=UTF8
+
+volumes:
+  pgdata:
+    name: hvia_pgdata
+    driver: local
