@@ -1,6 +1,12 @@
+# --- Plans & Internal Notes ---
+plans/
+
 # ==============================================================================
 # HVIA Task 04 — Amira Al Sebou: Git Ignore Rules
 # Security priority: Prevent leaks of company data, DB dumps, secrets, and logs.
+# --- Plans & Internal Notes ---
+plans/
+
 # ==============================================================================
 
 # --- Environment Variables & Secrets ---
