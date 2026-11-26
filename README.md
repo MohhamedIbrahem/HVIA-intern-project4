@@ -127,5 +127,5 @@ streamlit run dashboard/app.py
 
 ## Project Status
 
-- **Phase 0 (Planning & Repository Setup):** `IN_PROGRESS` — Requirements, `.gitignore`, and `README.md` prepared; comprehensive 6-phase implementation plan drafted and awaiting approval.
-- **Phases 1–6 (Infrastructure, Profiling, Repair/ETL, Local AI, BI Dashboards, Deployment):** `NOT_STARTED`
+- **Phase 0 (Repository & Environment Setup):** `IN_PROGRESS` — `.gitignore`, `README.md`, `requirements.txt`, and the full progress-tracking [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) (39 tasks across Phases 0–6) are prepared; Conda environment `hvia_task04` creation is next.
+- **Phases 1–6 (Infrastructure, Profiling, Repair/ETL, Local AI, BI Dashboards, Deployment):** `NOT_STARTED` — Tracked task-by-task in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
