@@ -146,12 +146,12 @@ pytest --cov=. --cov-report=term-missing
 
 ## Project Status
 
-- **Phase 1 (Foundation & Infrastructure):** `IN_PROGRESS`
-  - P1-T01 Repository Hygiene — ✅ Done
-  - P1-T02 Docker + Conda — ✅ Done
-  - P1-T03 Settings & Logging — ✅ Done
-  - P1-T04 SQL Restore & Raw Schema — ✅ Done
-  - P1-T05 Database Connection Pool — 🔄 In Progress
-  - P1-T06 ORM Models — Pending
-  - P1-T07 Test Infrastructure — Pending
-- **Phase 2–6:** Pending — See implementation plan.
+- **Phase 1 (Foundation & Infrastructure):** `COMPLETED` (7/7 tasks — 85 tests passing, `ruff` clean)
+  - P1-T01 Repository Hygiene — ✅ Done (`a14cc19`)
+  - P1-T02 Docker + Conda — ✅ Done (`8fee081`)
+  - P1-T03 Settings & Logging — ✅ Done (`8fee081` + `e290431`)
+  - P1-T04 SQL Restore & Immutable `raw` Schema — ✅ Done (`f0a2078` + `e290431`)
+  - P1-T05 Database Connection Pool & Async Engine — ✅ Done (`e290431`)
+  - P1-T06 42-Table ORM Models & Query Helpers (`db/models.py`, `db/queries.py`) — ✅ Done
+  - P1-T07 Test Infrastructure, Synthetic Factories & Mock Ollama (`tests/conftest.py`, `tests/fixtures/`) — ✅ Done
+- **Phase 2–6:** Pending (`P2-T01` Schema Inspector is next) — See implementation plan.
