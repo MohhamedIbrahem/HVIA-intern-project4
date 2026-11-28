@@ -6,6 +6,7 @@
 # --- Database & Async Drivers ---
 psycopg2-binary>=2.9.9         # Synchronous PostgreSQL adapter for Python
 asyncpg>=0.29.0                # Async PostgreSQL driver for concurrent profiling queries
+greenlet>=3.1.0                # Required by SQLAlchemy asyncio extension (sqlalchemy[asyncio])
 sqlalchemy>=2.0.34             # SQL toolkit, ORM, and async engine support
 
 # --- Configuration & Schema Validation ---

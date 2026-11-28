@@ -16,7 +16,7 @@ This repository houses the end-to-end data engineering, data quality, machine le
 1. **Source Data Immutability:** The original PostgreSQL dump and `raw` schema remain strictly read-only and unmodified.
 2. **Historical Fact Preservation:** Historical invoice unit prices and transaction totals are never overwritten with current catalog prices.
 3. **100% Local AI Only:** All LLM-assisted diagnostics run strictly locally via **Ollama** using `qwen3.5:4b` (or local `qwen3.5:9b`). Company data must **never** be sent to external APIs, cloud LLMs, or remote Ollama models (such as `kimi-k3:cloud`).
-4. **Deterministic Verification:** Local AI outputs serve solely as advisory recommendations and must be verified by deterministic Python/SQL validation rules (or human review) before any staging transformation is applied.
+4. **AI-Assisted & Deterministic Verification:** Deterministic Tier-1 normalization (Unicode NFC Arabic cleaning, digits, dirty phone flagging) runs unconditionally; local Ollama `qwen3.5:4b` handles Tier-2 ambiguity (product name clusters, manual-to-catalog matching). "No manual preprocessing" means no manual Excel/human record edits — never "no deterministic code." Every AI suggestion is verified by Python/SQL rules before staging writes.
 5. **Auditability & Zero Silent Deletion:** Every transformation is recorded in an auditable repair log (`old_value`, `new_value`, `rule`, `reason`, `timestamp`); records are never arbitrarily deleted.
 6. **Zero Data Exposure:** Database dumps (`.sql`), `.env` files, logs, and generated business reports are excluded from version control via `.gitignore`.
 
@@ -26,7 +26,7 @@ This repository houses the end-to-end data engineering, data quality, machine le
 
 ### Data Pipeline Flow
 
-1. **Restore (`raw`):** Load the original PostgreSQL dump into an isolated database instance (`amira_training_lab`) with an untouched `raw` schema copy.
+1. **Restore (`raw`):** Load the original PostgreSQL dump into an isolated database instance (`amira_training_lab`) with an untouched `raw` schema copy (full DDL preserved via `LIKE ... INCLUDING ALL`).
 2. **Data Quality (`Profile -> Diagnose -> Repair -> Validate -> Document`):**
    - **Tier 1 (Deterministic Rules):** Schema, completeness, Unicode NFC Arabic normalization, financial arithmetic checks, outlier detection, and referential integrity.
    - **Tier 2 (Local AI Advisor):** Summarized metadata/pattern review via local Ollama `qwen3.5:4b` (never raw PII).
@@ -45,32 +45,29 @@ This repository houses the end-to-end data engineering, data quality, machine le
 
 | Layer | Technology |
 |---|---|
-| **Database** | PostgreSQL 16 (Docker Compose recommended) |
-| **Core Language** | Python 3.12 (Conda environment) |
+| **Database** | PostgreSQL 16 (Docker Compose) |
+| **Core Language** | Python 3.12 (Conda environment `hvia_task04`) |
 | **ORM & Drivers** | SQLAlchemy 2.0, `psycopg2-binary`, `asyncpg` |
 | **Data Processing & DQ** | Pandas, NumPy, SciPy, Pandera, Pydantic, RapidFuzz |
 | **Arabic Text Support** | Python `unicodedata`, `arabic-reshaper`, `python-bidi` |
 | **Analytics & ML** | `statsmodels`, `scikit-learn` |
 | **BI Dashboards** | Streamlit, Plotly, Matplotlib, Seaborn |
-| **Local AI** | Ollama (`qwen3.5:4b`) via `ollama` / `httpx` / `aiohttp` |
+| **Local AI** | Ollama (`qwen3.5:4b`) via `ollama` / `httpx` |
 | **Testing & Linting** | `pytest`, `pytest-cov`, `pytest-asyncio`, `pytest-mock`, `ruff` |
 
 ---
 
-## Planned Repository Structure
+## Repository Structure
 
 ```text
 HVIA-intern-project4/
 ├── .gitignore
 ├── README.md
 ├── requirements.txt
-├── Database.txt
-├── README_amira_training_custom_ar.txt
-├── AMIRA_AL_SEBOU_HVIA_TASK04.pdf
-├── docker-compose.yml              # PostgreSQL + Ollama/Streamlit services (planned)
-├── .env.example                    # Environment variable template (planned)
+├── docker-compose.yml              # PostgreSQL 16 service
+├── .env.example                    # Environment variable template
 ├── config/                         # Settings & centralized rotating logging
-├── db/                             # Connection pooling & 42-table SQLAlchemy ORM models
+├── db/                             # Connection pooling & SQLAlchemy ORM models
 ├── etl/                            # Dump restoration & raw -> staging -> analytics ETL
 ├── data_quality/                   # Profiler, diagnoser, repairer, validator, reporter & rules
 ├── ai/                             # Local Ollama client, prompt templates & DQ advisor
@@ -84,48 +81,77 @@ HVIA-intern-project4/
 
 ---
 
-## Environment Setup (Prerequisites & Conda)
+## Environment Setup
 
 ### 1. Create and Activate the Conda Environment
-
-> **Note:** Execute these commands inside the `HVIA-intern-project4` directory when ready to initialize the Python environment.
 
 ```bash
 conda create -n hvia_task04 python=3.12 -y
 conda activate hvia_task04
 pip install -r requirements.txt
+# Or for exact reproducible versions:
+# pip install -r requirements.lock.txt
 ```
 
-### 2. Verify Local Ollama Setup
+### 2. Configure Environment Variables
 
-Ensure the local Ollama service is running and that only local models (such as `qwen3.5:4b`) are configured:
+```bash
+cp .env.example .env
+# Edit .env with your actual PostgreSQL password (use POSTGRES_PORT=5433 if a local PostgreSQL occupies 5432)
+```
+
+### 3. Start PostgreSQL
+
+```bash
+docker compose up -d postgres
+```
+
+### 4. Restore the Database
+
+```bash
+python -m etl.restore
+# or with a specific dump file:
+python -m etl.restore path/to/dump.sql
+# explicit destructive raw rebuild only with confirmation flag:
+python -m etl.restore --rebuild-raw --confirm
+```
+
+### 5. Verify Local Ollama Setup
+
+Ensure the local Ollama service is running and that only local models are configured:
 
 ```bash
 ollama list
 ```
 
-### 3. Database Setup
-
-Refer to [`Database.txt`](Database.txt) and [`README_amira_training_custom_ar.txt`](README_amira_training_custom_ar.txt) for PostgreSQL restoration details. When running via Docker Compose (Phase 1), PostgreSQL 16 will be provisioned automatically and configured via `.env` (copied from `.env.example`).
-
 ---
 
-## Running Checks & Applications (Once Implemented)
+## Running Tests
 
 ```bash
-# Run automated test suite with coverage
+# Run all tests
+pytest tests/ -v
+
+# Integration tests only (requires running PostgreSQL container)
+pytest tests/ -v -m integration
+
+# Unit tests only
+pytest tests/ -v -m "not integration"
+
+# With coverage
 pytest --cov=. --cov-report=term-missing
-
-# Lint and format check
-ruff check .
-
-# Launch Streamlit multi-page BI application
-streamlit run dashboard/app.py
 ```
 
 ---
 
 ## Project Status
 
-- **Phase 0 (Repository & Environment Setup):** `IN_PROGRESS` — `.gitignore`, `README.md`, `requirements.txt`, and the full progress-tracking [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) (39 tasks across Phases 0–6) are prepared; Conda environment `hvia_task04` creation is next.
-- **Phases 1–6 (Infrastructure, Profiling, Repair/ETL, Local AI, BI Dashboards, Deployment):** `NOT_STARTED` — Tracked task-by-task in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+- **Phase 1 (Foundation & Infrastructure):** `COMPLETED` (7/7 tasks — 85 tests passing, `ruff` clean)
+  - P1-T01 Repository Hygiene — ✅ Done (`a14cc19`)
+  - P1-T02 Docker + Conda — ✅ Done (`8fee081`)
+  - P1-T03 Settings & Logging — ✅ Done (`8fee081` + `e290431`)
+  - P1-T04 SQL Restore & Immutable `raw` Schema — ✅ Done (`f0a2078` + `e290431`)
+  - P1-T05 Database Connection Pool & Async Engine — ✅ Done (`e290431`)
+  - P1-T06 42-Table ORM Models & Query Helpers (`db/models.py`, `db/queries.py`) — ✅ Done
+  - P1-T07 Test Infrastructure, Synthetic Factories & Mock Ollama (`tests/conftest.py`, `tests/fixtures/`) — ✅ Done
+- **Phase 2–6:** Pending (`P2-T01` Schema Inspector is next) — See implementation plan.

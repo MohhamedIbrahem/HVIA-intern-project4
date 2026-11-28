@@ -1,7 +1,7 @@
 # config/settings.py
 """
 Typed application settings loaded from .env via Pydantic BaseSettings.
-Includes Ollama cloud-model blocker and database URL masking.
+Includes Ollama cloud-model blocker, SecretStr credential masking, and DSN validation.
 """
 
 from __future__ import annotations
@@ -9,11 +9,10 @@ from __future__ import annotations
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import field_validator, model_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
 
 # ---------------------------------------------------------------------------
 # Project root is two levels up from config/settings.py → HVIA-intern-project4/
@@ -31,9 +30,18 @@ _ALLOWED_OLLAMA_MODELS: set[str] = {
 _LOCAL_HOSTS: set[str] = {
     "localhost",
     "127.0.0.1",
+    "::1",
     "host.docker.internal",
-    "0.0.0.0",
 }
+
+_DSN_PASSWORD_RE = re.compile(r"(postgresql(?:\+\w+)?://[^:/@]+:)[^@]+(@)")
+
+
+def _mask_dsn(url: str | None) -> str | None:
+    """Return a DSN string with any embedded password replaced by '***'."""
+    if not url:
+        return url
+    return _DSN_PASSWORD_RE.sub(r"\1***\2", url)
 
 
 class Settings(BaseSettings):
@@ -48,7 +56,7 @@ class Settings(BaseSettings):
 
     # --- PostgreSQL Database ---
     postgres_user: str = "hvia_admin"
-    postgres_password: str
+    postgres_password: SecretStr
     postgres_db: str = "amira_training_lab"
     postgres_host: str = "localhost"
     postgres_port: int = 5432
@@ -75,11 +83,27 @@ class Settings(BaseSettings):
     # Computed / Validated Fields
     # -----------------------------------------------------------------------
     @model_validator(mode="after")
-    def _build_database_url(self) -> "Settings":
-        """Construct DATABASE_URL from parts if not explicitly provided."""
-        if not self.database_url:
+    def _build_database_url(self) -> Settings:
+        """Construct or validate DATABASE_URL using psycopg2 driver."""
+        if self.database_url:
+            if "${" in self.database_url:
+                raise ValueError(
+                    "DATABASE_URL contains unexpanded '${...}' template syntax. "
+                    "pydantic-settings does not expand shell variables inside .env values; "
+                    "remove DATABASE_URL to let Settings construct it or set a literal DSN."
+                )
+            if not self.database_url.startswith(("postgresql://", "postgresql+psycopg2://")):
+                raise ValueError(
+                    "DATABASE_URL must use a 'postgresql://' or 'postgresql+psycopg2://' scheme."
+                )
+            if self.database_url.startswith("postgresql://"):
+                self.database_url = self.database_url.replace(
+                    "postgresql://", "postgresql+psycopg2://", 1
+                )
+        else:
+            pwd = self.postgres_password.get_secret_value()
             self.database_url = (
-                f"postgresql://{self.postgres_user}:{self.postgres_password}"
+                f"postgresql+psycopg2://{self.postgres_user}:{pwd}"
                 f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
             )
         return self
@@ -103,12 +127,11 @@ class Settings(BaseSettings):
     @field_validator("ollama_base_url")
     @classmethod
     def _block_remote_ollama(cls, v: str) -> str:
-        """Ensure Ollama URL points to localhost only."""
-        # Extract hostname from URL
-        match = re.match(r"https?://([^:/]+)", v)
+        """Ensure Ollama URL points to a loopback/local host only."""
+        match = re.match(r"https?://(?:\[([^\]]+)\]|([^:/]+))", v)
         if not match:
             raise ValueError(f"Invalid Ollama URL: '{v}'")
-        host = match.group(1).lower()
+        host = (match.group(1) or match.group(2)).lower()
         if host not in _LOCAL_HOSTS:
             raise ValueError(
                 f"SECURITY VIOLATION: Remote Ollama host '{host}' is blocked. "
@@ -117,12 +140,18 @@ class Settings(BaseSettings):
         return v
 
     @property
+    def safe_database_url(self) -> str:
+        """Return DATABASE_URL with password masked."""
+        return _mask_dsn(self.database_url) or ""
+
+    @property
     def async_database_url(self) -> str:
         """Return asyncpg-compatible DATABASE_URL."""
         if self.database_url:
-            return self.database_url.replace(
-                "postgresql://", "postgresql+asyncpg://", 1
-            )
+            url = self.database_url
+            for prefix in ("postgresql+psycopg2://", "postgresql://"):
+                if url.startswith(prefix):
+                    return url.replace(prefix, "postgresql+asyncpg://", 1)
         return ""
 
     @property
@@ -131,6 +160,23 @@ class Settings(BaseSettings):
         p = PROJECT_ROOT / self.log_dir
         p.mkdir(parents=True, exist_ok=True)
         return p
+
+    def model_dump(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Override model_dump so credentials are always masked."""
+        data = super().model_dump(*args, **kwargs)
+        data["postgres_password"] = "***"
+        if data.get("database_url"):
+            data["database_url"] = _mask_dsn(data["database_url"])
+        return data
+
+    def model_dump_json(self, *args: Any, **kwargs: Any) -> str:
+        """Override model_dump_json so credentials are always masked in JSON."""
+        import json
+
+        kwargs.setdefault("exclude", set())
+        # Serialize via safe model_dump dict for consistent masking
+        data = self.model_dump(mode="json")
+        return json.dumps(data)
 
     def __repr__(self) -> str:
         """Mask password in repr output."""
